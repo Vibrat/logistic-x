@@ -17,10 +17,14 @@ from db.models import Order
 
 load_dotenv()
 
-# Resolve CSV path: Docker volume mount takes priority, then fall back to repo layout
+# Resolve CSV path in priority order:
+#   1. Docker volume mount  (/product/mock_logistics_data.csv)
+#   2. Committed copy inside backend/data/  (works on Render and local)
+#   3. Legacy repo layout   (../../product/)
 _docker_path = Path("/product/mock_logistics_data.csv")
-_repo_path = Path(__file__).parent.parent.parent / "product" / "mock_logistics_data.csv"
-CSV_PATH = _docker_path if _docker_path.exists() else _repo_path
+_data_path   = Path(__file__).parent.parent / "data" / "mock_logistics_data.csv"
+_repo_path   = Path(__file__).parent.parent.parent / "product" / "mock_logistics_data.csv"
+CSV_PATH = next((p for p in (_docker_path, _data_path, _repo_path) if p.exists()), _data_path)
 
 # Columns that map directly from the CSV to the DB (matches Order model fields)
 DB_COLUMNS = [
