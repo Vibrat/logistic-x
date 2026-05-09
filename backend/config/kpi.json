@@ -1,0 +1,47 @@
+[
+  {
+    "id": "total_orders",
+    "label": "Total Orders",
+    "description": "Count of all orders in the dataset",
+    "aggregation": "count",
+    "field": "*",
+    "filters": {},
+    "format": "integer"
+  },
+  {
+    "id": "delivered_orders",
+    "label": "Delivered Orders",
+    "description": "Count of orders with status = delivered",
+    "aggregation": "count",
+    "field": "*",
+    "filters": { "status": "delivered" },
+    "format": "integer"
+  },
+  {
+    "id": "delayed_orders",
+    "label": "Delayed Orders",
+    "description": "Count of orders with status = delayed",
+    "aggregation": "count",
+    "field": "*",
+    "filters": { "status": "delayed" },
+    "format": "integer"
+  },
+  {
+    "id": "on_time_delivery_rate",
+    "label": "On-Time Delivery Rate",
+    "description": "Percentage of orders with status = delivered out of all orders",
+    "aggregation": "ratio",
+    "numerator": { "field": "*", "filters": { "status": "delivered" } },
+    "denominator": { "field": "*", "filters": {} },
+    "format": "percent"
+  },
+  {
+    "id": "avg_delivery_days",
+    "label": "Avg Delivery Time",
+    "description": "Average number of days between order_date and delivery_date for delivered orders",
+    "aggregation": "avg_date_diff",
+    "field": "delivery_date - order_date",
+    "filters": { "delivery_date__not_null": true },
+    "format": "days"
+  }
+]
