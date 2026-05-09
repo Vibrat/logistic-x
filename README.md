@@ -287,6 +287,89 @@ Single table: `orders`
 
 ---
 
+## Deployment
+
+### Backend + Database → Render
+
+#### Option A — Blueprint (one click)
+
+1. Push your repo to GitHub.
+2. Go to **render.com → New → Blueprint** and connect your repo.
+3. Render reads `render.yaml` and creates:
+   - A **PostgreSQL 16** managed database (`logistics-db`)
+   - A **Python web service** (`logistics-backend`)
+4. In the Render dashboard for `logistics-backend`, set the two manual env vars:
+   - `GROQ_API_KEY` — your Groq API key
+   - `FRONTEND_URL` — your Vercel URL (set this after the frontend is deployed; use `*` temporarily)
+5. Trigger a manual deploy. On first start the service runs:
+   ```
+   alembic upgrade head → python -m db.seed → uvicorn
+   ```
+   The CSV at `product/mock_logistics_data.csv` is available because Render checks out the full repo.
+
+#### Option B — Manual setup
+
+1. **Create a PostgreSQL database**
+   - Render dashboard → **New → PostgreSQL** → name it `logistics-db`, plan Free.
+   - Copy the **Internal Database URL** — you'll need it in step 3.
+
+2. **Create a Web Service**
+   - Render dashboard → **New → Web Service** → connect your repo.
+   - Settings:
+     | Field | Value |
+     |---|---|
+     | Language | Python |
+     | Root Directory | `backend` |
+     | Build Command | `pip install -r requirements.txt` |
+     | Start Command | `alembic upgrade head && python -m db.seed && uvicorn main:app --host 0.0.0.0 --port $PORT` |
+     | Health Check Path | `/health` |
+
+3. **Set environment variables** in the web service:
+   | Key | Value |
+   |---|---|
+   | `DATABASE_URL` | Internal connection string from step 1 |
+   | `GROQ_API_KEY` | Your Groq API key |
+   | `FRONTEND_URL` | Your Vercel URL (add after frontend is deployed) |
+   | `PYTHON_VERSION` | `3.11.0` |
+
+4. Click **Deploy**. First deploy takes ~2 min (pip install + migration + seed).
+
+5. Note your backend URL — it will look like `https://logistics-backend.onrender.com`.
+
+---
+
+### Frontend → Vercel
+
+1. Go to **vercel.com → New Project** and import your GitHub repo.
+
+2. In the **Configure Project** screen:
+   | Field | Value |
+   |---|---|
+   | Framework Preset | Next.js (auto-detected) |
+   | Root Directory | `frontend` |
+
+3. Add environment variable:
+   | Key | Value |
+   |---|---|
+   | `NEXT_PUBLIC_API_URL` | `https://logistics-backend.onrender.com` (your Render URL from above) |
+
+4. Click **Deploy**. Vercel builds Next.js and publishes to a `.vercel.app` URL.
+
+5. Go back to Render → `logistics-backend` → Environment → update `FRONTEND_URL` to your Vercel URL (e.g. `https://logistics-ai.vercel.app`), then redeploy.
+
+---
+
+### Post-deployment checklist
+
+- [ ] `https://your-backend.onrender.com/health` returns `{"status":"ok"}`
+- [ ] `https://your-backend.onrender.com/api/dashboard/kpis` returns KPI data
+- [ ] Dashboard page loads KPI cards and charts
+- [ ] Ask AI answers a question end-to-end
+
+> **Render free tier note:** Free web services spin down after 15 minutes of inactivity. The first request after a cold start can take ~30 seconds. Upgrade to the Starter plan ($7/mo) to keep the service always-on.
+
+---
+
 ## Troubleshooting
 
 **Backend crashes on startup with `INSERT ON CONFLICT` error**

@@ -14,3 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8000
+
+# Production start: migrate → seed → serve
+# In docker-compose (dev) this CMD is overridden by the 'command:' field.
+# On Render (or any container host) this runs as-is.
+CMD ["sh", "-c", "alembic upgrade head && python -m db.seed && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
