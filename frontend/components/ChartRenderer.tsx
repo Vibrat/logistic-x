@@ -48,7 +48,7 @@ export default function ChartRenderer({ chartType, chartData, title }: Props) {
                 stroke={ds.borderColor ?? COLORS[i % COLORS.length]}
                 strokeDasharray={ds.borderDash?.join(" ")}
                 dot={false}
-                connectNulls={false}
+                connectNulls={ds.label === "Forecast"}
               />
             ))}
           </LineChart>

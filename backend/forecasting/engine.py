@@ -54,7 +54,7 @@ def _exponential_smoothing(series: pd.Series, horizon: int) -> tuple[list[float]
     fit = model.fit(optimized=True)
     forecast = fit.forecast(horizon)
     std = np.std(series.values)
-    lower = (forecast - 1.96 * std).clip(min=0).tolist()
+    lower = (forecast - 1.96 * std).clip(lower=0).tolist()
     upper = (forecast + 1.96 * std).tolist()
     return forecast.tolist(), lower, upper, "Holt-Winters Exponential Smoothing (additive trend)"
 
@@ -66,7 +66,7 @@ def _linear_regression(series: pd.Series, horizon: int) -> tuple[list[float], li
     # Use numpy polyfit to avoid sklearn dependency
     coeffs = np.polyfit(x.flatten(), y, 1)
     future_x = np.arange(len(series), len(series) + horizon)
-    forecast = np.polyval(coeffs, future_x).clip(min=0).tolist()
+    forecast = np.clip(np.polyval(coeffs, future_x), 0, None).tolist()
     residuals = y - np.polyval(coeffs, x.flatten())
     std = np.std(residuals)
     lower = [max(0, v - 1.96 * std) for v in forecast]

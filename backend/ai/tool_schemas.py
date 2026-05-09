@@ -1,5 +1,5 @@
 """
-tool_schemas.py — Groq tool definitions for analytics_query and forecast.
+tool_schemas.py — Groq tool definitions for analytics_query, forecast, and explore_data.
 
 The metric enum is populated at runtime from kpi.json so that Groq is always
 constrained to registered, validated metric IDs only.
@@ -12,6 +12,42 @@ def build_tool_definitions() -> list[dict]:
     valid_metric_ids = [k["id"] for k in registry]
 
     return [
+        # ── 1. Explore data ────────────────────────────────────────────────────
+        {
+            "type": "function",
+            "function": {
+                "name": "explore_data",
+                "description": (
+                    "Look up distinct values that exist in the database for a given dimension column. "
+                    "Call this BEFORE analytics_query or forecast whenever you are uncertain about the "
+                    "exact value to use (e.g. the user says 'SKU X', 'my carrier', or any vague term). "
+                    "Use the results to either proceed with the correct value or ask the user to pick "
+                    "from the returned list. Never guess dimension values."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "column": {
+                            "type": "string",
+                            "enum": [
+                                "sku", "product_category", "carrier", "region",
+                                "warehouse", "status", "origin_city", "destination_city",
+                            ],
+                            "description": "The dimension column to look up values for.",
+                        },
+                        "search": {
+                            "type": "string",
+                            "description": (
+                                "Optional partial text to narrow results (case-insensitive). "
+                                "E.g. 'PAPER' to find all paper-related SKUs."
+                            ),
+                        },
+                    },
+                    "required": ["column"],
+                },
+            },
+        },
+        # ── 2. Analytics query ─────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
@@ -19,7 +55,8 @@ def build_tool_definitions() -> list[dict]:
                 "description": (
                     "Execute an analytics query against the logistics orders dataset. "
                     "Use this for KPI calculations, aggregations, breakdowns, and trend queries. "
-                    "The metric must be one of the registered KPI IDs."
+                    "The metric must be one of the registered KPI IDs. "
+                    "Only call this once you have confirmed all dimension/filter values are exact."
                 ),
                 "parameters": {
                     "type": "object",
@@ -67,13 +104,15 @@ def build_tool_definitions() -> list[dict]:
                 },
             },
         },
+        # ── 3. Forecast ────────────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "forecast",
                 "description": (
                     "Forecast future demand for a specific SKU or product category. "
-                    "Use this for questions about predicted future orders, inventory planning, or demand trends."
+                    "Use this for questions about predicted future orders, inventory planning, or demand trends. "
+                    "Only call this once you have the exact SKU code or category name from explore_data or the user."
                 ),
                 "parameters": {
                     "type": "object",

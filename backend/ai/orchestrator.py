@@ -23,24 +23,67 @@ from forecasting.engine import run_forecast
 
 load_dotenv()
 
+"""
+orchestrator.py — Groq-powered AI orchestration layer.
+
+Responsibilities:
+1. Build tool definitions with kpi.json metric IDs injected as enum constraints.
+2. Run an agentic loop (up to MAX_STEPS rounds) where the AI can:
+   a. Call explore_data to discover real dimension values from the DB.
+   b. Ask the user a clarifying question (no tool call).
+   c. Call analytics_query or forecast to produce the final answer.
+3. Return a unified response envelope.
+
+AI never generates SQL. It only returns structured tool call parameters.
+"""
+import json
+import os
+from typing import Any
+
+from dotenv import load_dotenv
+from groq import Groq
+from sqlalchemy.orm import Session
+
+from ai.tool_schemas import build_tool_definitions
+from db.explorer import explore_column
+from db.query_builder import execute_analytics_query
+from forecasting.engine import run_forecast
+
+load_dotenv()
+
 MODEL = "llama-3.3-70b-versatile"
+MAX_STEPS = 5  # max explore_data calls before forcing a clarification
 
 SYSTEM_PROMPT = """You are an analytics assistant for a logistics company.
-You have access to two tools:
-- analytics_query: for KPI lookups, aggregations, breakdowns, and trend queries on order data.
-- forecast: for demand forecasting of specific SKUs or product categories.
+
+You have THREE tools available:
+
+1. explore_data — Query the database for real dimension values (SKUs, carriers, regions, etc.).
+   Use this FIRST whenever the user mentions a vague or partial value you are unsure about.
+   After seeing the results, either proceed with the correct value or show the options to the user.
+
+2. analytics_query — Compute KPI metrics, aggregations, breakdowns, and trends.
+   Only call this once all filter/dimension values are confirmed real values from the database.
+
+3. forecast — Predict future demand for a specific SKU or product category.
+   Only call this once you have the exact SKU code or category name.
+
+Decision flow:
+- User mentions something vague (e.g. "SKU X", "the paper category", "FedEx deliveries")?
+  → Call explore_data with the relevant column and a search hint.
+- explore_data returns multiple matches?
+  → Ask the user to pick one from the list (respond with text, no tool call).
+- explore_data returns exactly one match, or the user provided an exact value?
+  → Call analytics_query or forecast directly.
+- Question is ambiguous about what metric or dimension to use?
+  → Ask ONE concise clarifying question (respond with text, no tool call).
 
 Rules:
-- If the user's question is ambiguous or missing required information, ask ONE concise
-  clarifying question before calling a tool. Do NOT guess missing values.
-- For forecast questions you MUST know the exact SKU code (e.g. PAPER-0197) or the
-  product category (e.g. PAPER). If the user says "SKU X" or a vague name, ask them
-  to provide the exact value.
-- For analytics questions, if the metric or dimension is unclear, ask which one they mean.
-- Once you have enough information, call the appropriate tool. Never invent numbers.
-- Pick the most specific metric that matches the user's question.
+- Never guess or invent dimension values. Always verify with explore_data first.
+- Never call analytics_query or forecast with unverified values.
 - For time-based questions, use group_by: "week" or "month".
 - For comparison questions, include sort: "desc" and a reasonable limit.
+- Keep clarifying questions short and specific.
 """
 
 
@@ -48,49 +91,102 @@ def ask(question: str, history: list[dict], db: Session) -> dict[str, Any]:
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
     tools = build_tool_definitions()
 
-    # Build messages: system + prior turns + current user message
+    # Build initial message list: system + prior turns + new user message
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for msg in history:
         if msg["role"] in ("user", "assistant"):
             messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": question})
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-        temperature=0,
-    )
+    for _step in range(MAX_STEPS):
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            temperature=0,
+        )
 
-    choice = response.choices[0]
-    message = choice.message
+        choice = response.choices[0]
+        message = choice.message
 
-    # No tool call — AI is asking a clarifying question
-    if not message.tool_calls:
-        clarification = message.content or "Could you please clarify your question?"
-        return {
-            "answer": clarification,
-            "needs_clarification": True,
-            "chart_type": None,
-            "chart_data": None,
-            "explanation": None,
-            "filters_used": {},
-            "raw_data": [],
-        }
+        # ── No tool call: AI is responding with text (clarification or final prose) ──
+        if not message.tool_calls:
+            text = message.content or "Could you please clarify your question?"
+            return {
+                "answer": text,
+                "needs_clarification": True,
+                "chart_type": None,
+                "chart_data": None,
+                "explanation": None,
+                "filters_used": {},
+                "raw_data": [],
+            }
 
-    tool_call = message.tool_calls[0]
-    tool_name = tool_call.function.name
-    tool_args = json.loads(tool_call.function.arguments)
+        tool_call = message.tool_calls[0]
+        tool_name = tool_call.function.name
+        tool_args = json.loads(tool_call.function.arguments)
 
-    if tool_name == "analytics_query":
-        return _handle_analytics_query(question, tool_args, db)
-    elif tool_name == "forecast":
-        return _handle_forecast(question, tool_args, db)
+        # ── explore_data: run query, inject result, loop again ─────────────────
+        if tool_name == "explore_data":
+            try:
+                values = explore_column(
+                    column=tool_args["column"],
+                    search=tool_args.get("search"),
+                    db=db,
+                )
+                tool_result = {
+                    "column": tool_args["column"],
+                    "values": values,
+                    "count": len(values),
+                }
+            except ValueError as e:
+                tool_result = {"error": str(e), "values": []}
 
+            # Append the assistant's tool call + the tool result to the message thread
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                }],
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(tool_result),
+            })
+            continue  # back to top of loop — AI sees the results and decides next step
+
+        # ── analytics_query: run and return final response ─────────────────────
+        elif tool_name == "analytics_query":
+            return _handle_analytics_query(question, tool_args, db)
+
+        # ── forecast: run and return final response ────────────────────────────
+        elif tool_name == "forecast":
+            return _handle_forecast(question, tool_args, db)
+
+        # ── unknown tool ───────────────────────────────────────────────────────
+        else:
+            return {
+                "answer": f"Unknown tool requested: {tool_name}",
+                "needs_clarification": False,
+                "chart_type": None,
+                "chart_data": None,
+                "explanation": None,
+                "filters_used": {},
+                "raw_data": [],
+            }
+
+    # Loop exhausted without a final answer — ask the user
     return {
-        "answer": f"Unknown tool requested: {tool_name}",
-        "needs_clarification": False,
+        "answer": "I wasn't able to resolve your question automatically. Could you provide more specific details?",
+        "needs_clarification": True,
         "chart_type": None,
         "chart_data": None,
         "explanation": None,
@@ -162,6 +258,15 @@ def _handle_forecast(question: str, args: dict, db: Session) -> dict[str, Any]:
     forecast_labels = [r["month"] for r in result["forecast"]]
     forecast_values = [r["quantity"] for r in result["forecast"]]
 
+    # Bridge: repeat the last historical value as the first point of the forecast
+    # dataset so the two lines connect visually on the chart.
+    last_historical = historical_values[-1] if historical_values else None
+    forecast_data_with_bridge = (
+        [None] * (len(historical_labels) - 1)
+        + [last_historical]
+        + forecast_values
+    )
+
     chart_data = {
         "labels": historical_labels + forecast_labels,
         "datasets": [
@@ -173,7 +278,7 @@ def _handle_forecast(question: str, args: dict, db: Session) -> dict[str, Any]:
             },
             {
                 "label": "Forecast",
-                "data": [None] * len(historical_labels) + forecast_values,
+                "data": forecast_data_with_bridge,
                 "borderColor": "#f59e0b",
                 "backgroundColor": "rgba(245,158,11,0.1)",
                 "borderDash": [5, 5],
