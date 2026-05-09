@@ -1,4 +1,9 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Server-side (SSR): call Render directly.
+// Client-side (browser): route through the Next.js rewrite proxy to avoid CORS.
+const API_URL =
+  typeof window === "undefined"
+    ? (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000")
+    : "/api/proxy";
 
 export interface KPI {
   id: string;
